@@ -844,6 +844,7 @@ function sparkline(s) {
 function sigRow(s) {
   const d = document.createElement("details");
   d.className = "sig";
+  d.dataset.sid = s.id;   // lets the field-guide sidebar pin this signal on expand
   const changed = s.current.flag !== s.current.previous_flag || Math.abs(s.current.z_delta || 0) >= 0.25;
   d.dataset.flagged = s.current.flag === true ? "true" : "false";
   d.dataset.changed = changed ? "true" : "false";
@@ -1002,7 +1003,10 @@ document.getElementById("foot").innerHTML =
   const titleEl = document.getElementById("exp-title");
   const bodyEl = document.getElementById("exp-body");
   const howEl = document.getElementById("exp-how");
+  const kick = document.querySelector(".exp-kicker");
+  const sub = document.querySelector(".exp-sub");
   if (!toc || !titleEl) return;
+  let pinned = null;   // signal id pinned by an expanded row, or null (scroll mode)
 
   SECTIONS.forEach((s, i) => {
     const li = document.createElement("li");
@@ -1033,7 +1037,7 @@ document.getElementById("foot").innerHTML =
   }
   let ticking = false;
   function onScroll() {
-    if (ticking) return; ticking = true;
+    if (pinned || ticking) return; ticking = true;   // pinned to a signal: ignore scroll
     requestAnimationFrame(() => { render(activeIndex()); ticking = false; });
   }
   addEventListener("scroll", onScroll, { passive: true });
@@ -1052,10 +1056,69 @@ document.getElementById("foot").innerHTML =
 
   function goTo(i) {
     const el = els[i]; if (!el) return;
+    if (pinned) unpin();   // navigating the guide releases a pinned signal
     scrollTo({ top: el.getBoundingClientRect().top + scrollY - 16, behavior: "smooth" });
     render(i);
     if (matchMedia("(max-width: 1160px)").matches) closeP();
   }
+
+  /* ---- per-signal detail: expanding a signal row pins its explanation ---- */
+  const D = JSON.parse(document.getElementById("ews-data").textContent);
+  const sigMap = {}; (D.signals || []).forEach(s => sigMap[s.id] = s);
+  const signalsIdx = SECTIONS.findIndex(x => x.id === "sec-signals");
+  const SIG_EXPLAIN = {
+    A1: "The S&P 500 priced against its 10-year average inflation-adjusted earnings — the classic Shiller CAPE. A high reading means stocks are expensive versus their own history, which lowers expected long-run returns and deepens drawdowns. Valuation leads, but expensive can stay expensive for years — necessary, not sufficient.",
+    A2: "Total US equity value divided by GDP — Buffett’s favourite gauge of the market versus the real economy, detrended so its secular rise doesn’t flag forever. Like CAPE it is slow: it warns early and saturates in structurally rich regimes.",
+    A3: "A Greenwood-Hanson style red-zone flag — fast 3-year growth in credit-to-GDP together with booming asset prices. Credit expansion fuelling an asset boom is one of the most reliable precursors of financial trouble down the line.",
+    B1: "The yield-curve slope, 10-year minus 3-month Treasury — the most reliable US recession lead there is. When short rates rise above long rates the curve is warning that policy is tight and growth will slow; it leads tops by many months.",
+    B2: "The Gilchrist-Zakrajšek Excess Bond Premium — the slice of corporate credit spreads NOT explained by default risk, i.e. pure investor risk appetite. When it rises, bond investors are demanding more to hold risk, an early sign of tightening conditions.",
+    B3: "A labour-market early warning from insured-unemployment claims (26-week versus 52-week trend), a Sahm-rule cousin. When continuing claims turn up off their lows the job cycle is rolling over, which historically precedes recessions and equity weakness.",
+    C1: "Price versus its 10-month moving average — Meb Faber’s trend rule. Below the average, the market is in a downtrend. Trend doesn’t forecast tops; it confirms a decline is underway, and it is the system’s main brake and drawdown-limiter.",
+    C2: "The share of S&P 500 members above their own 200-day average — how broad the advance is. When the index holds up but fewer stocks participate, the rally is narrowing — classic internal weakness. Breadth confirms declines rather than leading them.",
+    C3: "The extra yield investors demand to hold junk bonds over Treasuries — the credit market’s fear gauge. Spreads are tight at tops (complacency) and blow out during the fall, so the level confirms; it is the acceleration that carries early information.",
+    D1: "The ratio of 1-month to 3-month expected volatility (VIX / VIX3M). Normally near-term vol is cheaper; when it inverts, options traders are pricing imminent stress. It confirms stress that is already arriving rather than leading it.",
+    D2: "The Chicago Fed’s National Financial Conditions Index — a broad summary of how tight or loose money, credit and risk are across the whole system. Above zero is tighter than average. A fast, coincident stress gauge.",
+    D3: "Two crowding gauges — retail bullishness (AAII bulls minus bears) and margin-debt growth. Extreme optimism plus rapid leverage marks a crowded, fragile market, the fuel for sharp reversals. Fast and contrarian.",
+    D4: "Aggregate short interest, detrended (Rapach-Ringgenberg-Zhou). High detrended shorting means informed traders are positioned for trouble — one of the better standalone predictors of declines. It led the 2007 top by over a year, but is blind to fast shocks and bubbles.",
+    S_gdelt: "Experimental: US news-stress from the GDELT global news database — how negative and dispersed the news tone is. Zero weight — a candidate on probation until it proves it can lead tops through the AUC gate, not merely react.",
+    S_sitotal: "Experimental cross-check: total-market short interest (not just NYSE). Zero weight — kept beside the promoted short-interest signal to see whether the broader series adds anything before it could earn a vote."
+  };
+  const statusPhrase = s => s.current.flag === true
+      ? "flagged — contributing to today’s danger reading."
+      : s.current.flag === false ? "not flagged." : "no flag rule (shadow).";
+  const rolePhrase = s => s.shadow
+      ? "It’s a shadow signal — zero weight, on probation until it clears the pre-peak AUC gate."
+      : /LEAD/i.test(s.role || "")
+        ? `It’s a leading signal — historically it moves before tops (pre-peak AUC ${s.auc_leading ?? "—"}).`
+        : /confirm/i.test(s.role || "")
+          ? `It’s a confirmer — it moves as the decline arrives, not before (coincident AUC ${s.auc_coincident ?? "—"}).`
+          : "Currently rated weak — it hasn’t cleared the leading-signal bar.";
+  function showSignal(sid) {
+    const s = sigMap[sid]; if (!s) return;
+    pinned = sid; cur = -1;
+    kick.textContent = "Signal detail";
+    sub.textContent = "collapse the row to return to the guide";
+    titleEl.textContent = s.name;
+    bodyEl.textContent = SIG_EXPLAIN[sid] || s.desc || "";
+    howEl.innerHTML = "<b>Right now:</b> " + statusPhrase(s) + " " + rolePhrase(s);
+    tocBtns.forEach((b, j) => b.setAttribute("aria-current", j === signalsIdx ? "true" : "false"));
+  }
+  function unpin() {
+    pinned = null; cur = -1;
+    kick.textContent = "Field guide";
+    sub.textContent = "what you’re looking at ↓";
+    render(activeIndex());
+  }
+  const openStack = [];
+  document.querySelectorAll("details.sig").forEach(det => {
+    det.addEventListener("toggle", () => {
+      const sid = det.dataset.sid; if (!sid) return;
+      const k = openStack.indexOf(sid); if (k >= 0) openStack.splice(k, 1);
+      if (det.open) { openStack.push(sid); showSignal(sid); }
+      else if (openStack.length) showSignal(openStack[openStack.length - 1]);
+      else unpin();
+    });
+  });
 
   render(activeIndex());
 })();
